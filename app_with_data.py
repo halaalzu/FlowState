@@ -567,8 +567,10 @@ def video_feed():
 def current_pose():
     """Get the current detected pose, landmarks, and handedness with live camera."""
     try:
-        # Capture a single frame for pose detection
-        success, frame = camera.read()
+        # Capture a single frame for pose detection (with thread lock)
+        with camera_lock:
+            success, frame = camera.read()
+        
         if not success:
             return jsonify({
                 'pose': None,
