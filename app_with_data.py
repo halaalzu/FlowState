@@ -487,10 +487,15 @@ class HandTracker:
             self.stop_session()
         self.landmarker.close()
 
-# Initialize camera and tracker
+# Initialize camera and tracker with optimized settings
+import threading
+camera_lock = threading.Lock()
 camera = cv2.VideoCapture(0)
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+camera.set(cv2.CAP_PROP_FPS, 30)
+camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 tracker = HandTracker()
 
 # Default user (create if doesn't exist)
@@ -502,29 +507,30 @@ except:
     pass  # User already exists
 
 def generate_frames():
-    """Generate frames for video streaming."""
-    frame_timestamp_ms = 0  # Each stream has its own timestamp
+    """Generate frames for video streaming with optimized performance."""
+    frame_timestamp_ms = 0
     
     while True:
-        success, frame = camera.read()
+        with camera_lock:
+            success, frame = camera.read()
+        
         if not success:
-            # Don't break - just skip this frame and continue
             continue
         
-        # Process frame with hand tracking and data collection
-        frame = tracker.process_frame(frame, frame_timestamp_ms)
-        frame_timestamp_ms += 33  # ~30 FPS
-        
-        # Encode frame as JPEG
-        ret, buffer = cv2.imencode('.jpg', frame)
-        if not ret:
-            continue  # Skip if encoding failed
+        try:
+            # Process frame with hand tracking
+            frame = tracker.process_frame(frame, frame_timestamp_ms)
+            frame_timestamp_ms += 33  # ~30 FPS
             
-        frame = buffer.tobytes()
-        
-        # Yield frame in multipart format
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            # Encode with reduced quality for better performance
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ret:
+                frame_bytes = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        except Exception as e:
+            logger.error(f"Frame error: {e}")
+            continue
 
 @app.route('/')
 def index():
