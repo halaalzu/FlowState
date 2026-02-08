@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlowState - Hand Rhythm Game</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>FlowState</h1>
+        <p class="subtitle">Hand Gesture Rhythm Game</p>
+        <div class="video-container">
+            <img src="{{ url_for('video_feed') }}" alt="Video Feed">
+        </div>
+        <div class="info">
+            <p>Match the hand poses as they reach the hit zone!</p>
+            <p class="hint">Press ESC in the video window to stop (if using OpenCV window)</p>
+        </div>
+    </div>
+</body>
+</html>
