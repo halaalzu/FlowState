@@ -159,11 +159,12 @@ def play_note_once(frequency):
         sound.play()
 
 def handle_pose_change(pose_name):
-    """Handle pose changes - play note once when pose detected"""
+    """Handle pose changes - log pose but don't play sound (handled by frontend)"""
     if pose_name in POSE_NOTES:
-        # Play the note once for this pose
+        # Log the pose detection (sound handled by frontend Web Audio API)
         frequency = POSE_NOTES[pose_name]
-        play_note_once(frequency)
+        note_name = {329.63: 'E', 293.66: 'D', 261.63: 'C'}.get(frequency, '?')
+        print(f"🎯 Detected pose: {pose_name} -> Note {note_name} ({frequency}Hz)")
 
 class HandTracker:
     def __init__(self):
@@ -196,6 +197,10 @@ class HandTracker:
         self.max_history_length = 2  # Average over last 2 predictions (faster response)
         self.current_pose = None
         self.pose_confidence = 0.0
+        
+        # Shared detection data (for API without camera access)
+        self.last_landmarks = []
+        self.last_handedness = []
     
     def start_session(self, user_id, level_name="free_play"):
         """Start a new recording session"""
@@ -361,23 +366,15 @@ class HandTracker:
             # Predict pose
             detected_pose, confidence = self.predict_pose(hand_landmarks)
             
-            # Store current detection data for API
-            self._last_pose = detected_pose
-            self._last_landmarks = [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in hand_landmarks.landmark]
-            self._last_handedness = [{"categoryName": handedness, "score": handedness_info.score if handedness_info else 1.0}]
-            self._last_confidence = float(confidence)
-            
-            # Debug
-            print(f"DEBUG: Hand detected! Pose: {detected_pose}, Landmarks count: {len(self._last_landmarks)}")
+            # Store current detection data for shared state (fix attribute access)
+            self.last_landmarks = [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in hand_landmarks]
+            self.last_handedness = [{"categoryName": handedness, "score": handedness_info.score if handedness_info else 1.0}]
         else:
             # No hand detected - clear current pose data
-            self._last_pose = None
-            self._last_landmarks = None
-            self._last_handedness = None
-            self._last_confidence = 0.0
-            self.current_pose = None  # Clear persistent pose
+            self.current_pose = None
             self.pose_confidence = 0.0
-            print("DEBUG: No hand detected, clearing pose data")
+            self.last_landmarks = []
+            self.last_handedness = []
 
         if self.is_recording and self.current_session:
             if detection_result.hand_landmarks:
@@ -451,11 +448,25 @@ class HandTracker:
             self.stop_session()
         self.landmarker.close()
 
-# Initialize camera and tracker
+# Initialize camera and tracker with thread-safe access
+import threading
+camera_lock = threading.Lock()
 camera = cv2.VideoCapture(0)
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+camera.set(cv2.CAP_PROP_FPS, 30)
+camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer to get latest frames
 tracker = HandTracker()
+
+# Shared state for latest detection results (to avoid competing camera access)
+latest_detection = {
+    'pose': None,
+    'landmarks': [],
+    'handedness': [],
+    'confidence': 0.0,
+    'frame_count': 0
+}
+detection_lock = threading.Lock()
 
 # Default user (create if doesn't exist)
 DEFAULT_USER_ID = "default_user"
@@ -466,7 +477,8 @@ except:
     pass  # User already exists
 
 def generate_frames():
-    """Generate frames for video streaming."""
+    """Generate frames for video streaming AND update shared detection state."""
+    global latest_detection
     frame_timestamp_ms = 0  # Each stream has its own timestamp
     
     while True:
@@ -478,6 +490,20 @@ def generate_frames():
         # Process frame with hand tracking and data collection
         frame = tracker.process_frame(frame, frame_timestamp_ms)
         frame_timestamp_ms += 33  # ~30 FPS
+        
+        # Update shared detection state (so /api/current_pose doesn't need to read from camera)
+        with detection_lock:
+            latest_detection['pose'] = tracker.current_pose
+            latest_detection['confidence'] = tracker.pose_confidence
+            latest_detection['frame_count'] += 1
+            
+            # Update landmarks and handedness if available
+            if hasattr(tracker, 'last_landmarks'):
+                latest_detection['landmarks'] = tracker.last_landmarks
+                latest_detection['handedness'] = tracker.last_handedness
+            else:
+                latest_detection['landmarks'] = []
+                latest_detection['handedness'] = []
         
         # Encode frame as JPEG
         ret, buffer = cv2.imencode('.jpg', frame)
@@ -523,47 +549,15 @@ def video_feed():
 
 @app.route('/api/current_pose')
 def current_pose():
-    """Get the current detected pose, landmarks, and handedness with live camera."""
+    """Get the current detected pose from shared state (no camera access needed)."""
     try:
-        # Capture a single frame for pose detection
-        success, frame = camera.read()
-        if not success:
+        # Read from shared detection state instead of competing for camera
+        with detection_lock:
             return jsonify({
-                'pose': None,
-                'landmarks': [],
-                'handedness': [],
-                'confidence': 0.0,
-                'error': 'Camera not available'
-            })
-        
-        # Process frame for detection (without drawing)
-        frame = cv2.flip(frame, 1)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        
-        # Detect hand landmarks
-        detection_result = tracker.landmarker.detect(mp_image)
-        
-        if detection_result.hand_landmarks:
-            hand_landmarks = detection_result.hand_landmarks[0]
-            handedness_info = detection_result.handedness[0][0] if detection_result.handedness else None
-            handedness = "Right" if handedness_info and handedness_info.category_name == "Right" else "Left"
-            
-            # Predict pose using trained model
-            detected_pose, confidence = tracker.predict_pose(hand_landmarks)
-            
-            return jsonify({
-                'pose': detected_pose,
-                'landmarks': [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in hand_landmarks],
-                'handedness': [{"categoryName": handedness, "score": handedness_info.score if handedness_info else 1.0}],
-                'confidence': float(confidence)
-            })
-        else:
-            return jsonify({
-                'pose': None,
-                'landmarks': [],
-                'handedness': [],
-                'confidence': 0.0
+                'pose': latest_detection['pose'],
+                'landmarks': latest_detection['landmarks'],
+                'handedness': latest_detection['handedness'],
+                'confidence': float(latest_detection['confidence'])
             })
             
     except Exception as e:
@@ -1025,6 +1019,25 @@ def gemini_chat():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
+    import signal
+    import sys
+    
+    def cleanup_handler(signum, frame):
+        """Handle cleanup on signal termination"""
+        print("\n\n🛑 Shutting down gracefully...")
+        try:
+            camera.release()
+            tracker.close()
+            db.close()
+            print("✅ Camera and resources released safely")
+        except:
+            pass
+        sys.exit(0)
+    
+    # Register signal handlers for safe camera cleanup
+    signal.signal(signal.SIGINT, cleanup_handler)
+    signal.signal(signal.SIGTERM, cleanup_handler)
+    
     print("\n" + "="*60)
     print("🎥 FlowState Hand Tracking + Data Collection")
     print("="*60)
@@ -1042,7 +1055,10 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\n\n🛑 Shutting down...")
     finally:
-        tracker.close()
-        camera.release()
-        db.close()
-        print("✅ Cleanup complete. Goodbye!\n")
+        try:
+            camera.release()
+            tracker.close()
+            db.close()
+            print("✅ Cleanup complete. Goodbye!\n")
+        except:
+            print("✅ Server stopped\n")

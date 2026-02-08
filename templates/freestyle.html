@@ -43,15 +43,20 @@
         <h1 class="font-display text-4xl md:text-5xl tracking-[0.25em] text-foreground leading-[0.9]">
             FREE STYLE
         </h1>
-        <div id="recIndicator" class="hidden flex items-center gap-2 bg-foreground px-3 py-1 border-2 border-primary">
-            <div class="w-3 h-3 rounded-full bg-primary animate-blink"></div>
-            <span class="font-display text-primary tracking-widest text-sm">REC</span>
+        <div class="flex gap-4 items-center">
+            <button id="enableSoundBtn" onclick="initializeAudio()" class="bg-primary border-4 border-foreground px-4 py-2 font-display text-lg tracking-widest text-primary-foreground cursor-pointer btn-3d hover:translate-y-1 transition-transform">
+                🔊 ENABLE SOUND
+            </button>
+            <div id="recIndicator" class="hidden flex items-center gap-2 bg-foreground px-3 py-1 border-2 border-primary">
+                <div class="w-3 h-3 rounded-full bg-primary animate-blink"></div>
+                <span class="font-display text-primary tracking-widest text-sm">REC</span>
+            </div>
         </div>
     </div>
 
     <!-- Camera Feed -->
     <div class="mb-6 border-[5px] border-foreground overflow-hidden relative" style="box-shadow: 8px 8px 0 hsl(0, 0%, 10%);">
-        <video id="videoElement" autoplay playsinline></video>
+        <img id="videoElement" src="/video_feed" />
         <canvas id="canvas" style="position: absolute; top: 0; left: 0;"></canvas>
         <!-- Hand label in top-left corner -->
         <div id="handLabel" class="absolute top-4 left-4 bg-foreground text-card border-2 border-card px-4 py-2 font-display text-xl tracking-wider" style="box-shadow: 3px 3px 0 rgba(0,0,0,0.3);">
@@ -101,8 +106,7 @@ let isRecording = false;
 let sessionId = null;
 let audioContext = null;
 let lastPose = null;
-let activeOscillators = [];
-let activeMasterGain = null;
+let soundEnabled = false;
 let hasPlayedNote = false;
 
 const POSE_NOTES = {
@@ -111,101 +115,54 @@ const POSE_NOTES = {
     '3': { freq: 261.63, name: 'C' }
 };
 
-// Initialize camera
-navigator.mediaDevices.getUserMedia({ video: true })
-    .then(stream => {
-        document.getElementById('videoElement').srcObject = stream;
-    })
-    .catch(err => console.error('Camera error:', err));
+// Load video feed from backend (MJPEG stream)
+const video = document.getElementById('videoElement');
 
-// Auto-initialize audio on page load
-window.addEventListener('load', () => {
-    // Initialize audio context
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    
-    // Start pose polling immediately
-    startPosePolling();
-    
-    console.log('✅ Audio and pose detection auto-started');
-    console.log('Audio context state:', audioContext.state);
-});
-
-// Resume audio context on any user interaction (required by browsers)
-function resumeAudioContext() {
-    if (audioContext && audioContext.state === 'suspended') {
-        audioContext.resume().then(() => {
-            console.log('🔊 Audio context resumed - sound enabled!');
-        });
+// SIMPLIFIED AUDIO SYSTEM - Just create context and play tones
+function initializeAudio() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
+    
+    audioContext.resume().then(() => {
+        soundEnabled = true;
+        document.getElementById('enableSoundBtn').style.display = 'none';
+        
+        // Test beep
+        playTone(440, 0.2);
+        showToast('🔊 Sound Enabled', 'Gestures will now play notes!');
+    });
 }
 
-// Add click handler to resume audio
-document.addEventListener('click', resumeAudioContext, { once: true });
-document.addEventListener('touchstart', resumeAudioContext, { once: true });
+// Auto-start on page load
+window.addEventListener('load', () => {
+    startPosePolling();
+});
 
-// Piano tone generation
-function generatePianoTone(frequency, duration = 0.5) {
-    if (!audioContext) {
-        console.warn('Audio context not initialized');
-        return;
-    }
-    
-    // Resume audio context if suspended
-    if (audioContext.state === 'suspended') {
-        audioContext.resume().then(() => {
-            console.log('🔊 Audio context resumed');
-        });
-    }
-    
-    if (activeMasterGain) {
-        const now = audioContext.currentTime;
-        activeMasterGain.gain.cancelScheduledValues(now);
-        activeMasterGain.gain.setValueAtTime(activeMasterGain.gain.value, now);
-        activeMasterGain.gain.linearRampToValueAtTime(0, now + 0.01);
-    }
-    
-    activeOscillators.forEach(osc => {
-        try { osc.stop(); } catch(e) {}
-    });
-    activeOscillators = [];
+// SIMPLE TONE PLAYER - No complex oscillator management
+function playTone(frequency, duration = 0.3) {
+    if (!audioContext || !soundEnabled) return;
 
     const now = audioContext.currentTime;
-    const masterGain = audioContext.createGain();
-    masterGain.connect(audioContext.destination);
-    masterGain.gain.setValueAtTime(0, now);
-    activeMasterGain = masterGain;
     
-    const attack = 0.01, decay = 0.05, sustain = 0.6, release = 0.1;
-    masterGain.gain.linearRampToValueAtTime(0.3, now + attack);
-    masterGain.gain.linearRampToValueAtTime(0.3 * sustain, now + attack + decay);
-    masterGain.gain.setValueAtTime(0.3 * sustain, now + duration - release);
-    masterGain.gain.linearRampToValueAtTime(0, now + duration);
+    // Create oscillator and gain
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
     
-    const harmonics = [
-        { mult: 1.0, amp: 1.0 },
-        { mult: 2.0, amp: 0.5 },
-        { mult: 3.0, amp: 0.25 },
-        { mult: 4.0, amp: 0.125 },
-        { mult: 5.0, amp: 0.0625 }
-    ];
+    // Setup oscillator
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, now);
     
-    harmonics.forEach(({ mult, amp }) => {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        oscillator.frequency.value = frequency * mult;
-        oscillator.type = 'sine';
-        gainNode.gain.value = amp;
-        oscillator.connect(gainNode);
-        gainNode.connect(masterGain);
-        oscillator.start(now);
-        oscillator.stop(now + duration);
-        activeOscillators.push(oscillator);
-    });
+    // Setup gain envelope (simple fade out)
+    gainNode.gain.setValueAtTime(0.3, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
     
-    setTimeout(() => {
-        activeOscillators = [];
-        activeMasterGain = null;
-    }, duration * 1000 + 100);
+    // Connect and play
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.start(now);
+    oscillator.stop(now + duration);
 }
 
 // Pose polling
@@ -213,6 +170,8 @@ function startPosePolling() {
     const canvas = document.getElementById('canvas');
     const video = document.getElementById('videoElement');
     const ctx = canvas.getContext('2d');
+    
+    let pollCount = 0;
     
     setInterval(async () => {
         try {
@@ -222,6 +181,17 @@ function startPosePolling() {
                 const pose = data.pose;
                 const landmarks = data.landmarks;
                 const handedness = data.handedness;
+                
+                // Debug logging every 20 polls (~2 seconds)
+                pollCount++;
+                if (pollCount % 20 === 0) {
+                    console.log(`📊 Poll #${pollCount}: Pose=${pose}, Landmarks=${landmarks.length}, Handedness=${handedness.length}, AudioState=${audioContext?.state}, SoundEnabled=${soundEnabled}`);
+                }
+                
+                // Always log pose changes
+                if (pose && pose !== lastPose && pose !== 'None') {
+                    console.log(`🎯 POSE CHANGED: ${lastPose} → ${pose}`);
+                }
                 
                 // Update pose display (top-right)
                 document.getElementById('poseDisplay').textContent = pose || 'No pose';
@@ -249,45 +219,71 @@ function startPosePolling() {
                 if (handedness && handedness.length > 0 && handedness[0].categoryName) {
                     const hand = handedness[0].categoryName;
                     handLabel.textContent = `${hand.toUpperCase()} HAND`;
-                } else if (landmarks && landmarks.length > 0) {
+                } else if (landmarks && Array.isArray(landmarks) && landmarks.length > 0) {
                     handLabel.textContent = 'HAND DETECTED';
+                } else if (typeof landmarks === 'number' && landmarks > 0) {
+                    handLabel.textContent = `HAND DETECTED (${landmarks} points)`;
                 } else {
                     handLabel.textContent = 'NO HAND';
                 }
                 
                 // Draw skeleton on canvas
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
+                canvas.width = video.naturalWidth || 640;
+                canvas.height = video.naturalHeight || 480;
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                if (landmarks && landmarks.length > 0) {
+                // Only draw if landmarks is an array with data
+                if (landmarks && Array.isArray(landmarks) && landmarks.length > 0) {
                     drawHandSkeleton(ctx, landmarks[0], canvas.width, canvas.height);
                 }
                 
                 // Play note logic: play once when pose changes, reset with fist
-                if (pose === 'fist') {
+                // Filter out null/None/empty poses
+                const validPose = (pose && pose !== 'None' && pose !== 'null') ? pose : null;
+                
+                if (validPose === 'fist') {
                     // Fist resets the note playing flag
                     hasPlayedNote = false;
                     lastPose = 'fist';
-                } else if (POSE_NOTES[pose]) {
-                    // Play note only if it's a new pose and we haven't played it yet
-                    if (pose !== lastPose) {
-                        playNote(pose);
-                        lastPose = pose;
+                    console.log('👊 Fist detected - reset note playing flag');
+                } else if (validPose && POSE_NOTES[validPose]) {
+                    // Play note only if it's a new pose
+                    if (validPose !== lastPose) {
+                        console.log(`🎹 Triggering note for pose: ${validPose} (was: ${lastPose})`);
+                        playNote(validPose);
+                        lastPose = validPose;
                         hasPlayedNote = true;
                     }
                 } else {
-                    lastPose = pose;
+                    if (validPose && validPose !== lastPose) {
+                        console.log(`⚠️ Pose ${validPose} has no note mapping`);
+                    }
+                    lastPose = validPose;
                 }
             }
         } catch (e) {
             console.error('Pose check error:', e);
         }
-    }, 50);
+    }, 100);  // Reduced to 100ms (10fps) to avoid camera stress
 }
 
 // Draw hand skeleton with green lines
-function drawHandSkeleton(ctx, landmarks, width, height) {
+function drawHandSkeleton(ctx, handLandmarks, width, height) {
+    // Check if handLandmarks is valid
+    if (!handLandmarks || typeof handLandmarks !== 'object') {
+        console.warn('Invalid landmarks passed to drawHandSkeleton');
+        return;
+    }
+    
+    // Handle case where handLandmarks might be an object with a landmarks property
+    const landmarks = Array.isArray(handLandmarks) ? handLandmarks : 
+                     (handLandmarks.landmarks || handLandmarks);
+    
+    if (!Array.isArray(landmarks) || landmarks.length === 0) {
+        console.warn('Landmarks is not an array or is empty');
+        return;
+    }
+    
     ctx.strokeStyle = '#00ff00'; // Green color
     ctx.lineWidth = 3;
     ctx.fillStyle = '#00ff00';
@@ -329,15 +325,39 @@ function drawHandSkeleton(ctx, landmarks, width, height) {
 
 function playNote(pose) {
     console.log('🎵 playNote called with pose:', pose);
-    const noteInfo = POSE_NOTES[pose];
-    if (noteInfo && audioContext) {
-        console.log('🎵 Playing note:', noteInfo.name, 'at frequency:', noteInfo.freq, 'Hz');
-        console.log('🎵 Audio context state:', audioContext.state);
-        generatePianoTone(noteInfo.freq);
-        document.getElementById('lastNote').textContent = noteInfo.name;
-    } else {
-        console.warn('❌ Cannot play note - noteInfo:', noteInfo, 'audioContext:', !!audioContext);
+    
+    if (!audioContext) {
+        console.warn('❌ Audio context not initialized - click ENABLE SOUND first');
+        return;
     }
+    
+    if (!soundEnabled) {
+        console.warn('❌ Sound not enabled - click ENABLE SOUND first');
+        return;
+    }
+    
+    const noteInfo = POSE_NOTES[pose];
+    if (!noteInfo) {
+        console.warn('❌ No note mapping for pose:', pose);
+        return;
+    }
+    
+    // Resume audio context if needed
+    if (audioContext.state === 'suspended') {
+        console.warn('⚠️ Audio context suspended - resuming...');
+        audioContext.resume();
+    }
+    
+    console.log('🎵 Playing note:', noteInfo.name, 'at', noteInfo.freq, 'Hz');
+    playTone(noteInfo.freq, 0.5);
+    document.getElementById('lastNote').textContent = noteInfo.name;
+    
+    // Visual feedback
+    const gestureDisplay = document.getElementById('gestureDisplay');
+    gestureDisplay.style.color = '#00ff00';
+    setTimeout(() => {
+        gestureDisplay.style.color = '';
+    }, 200);
 }
 
 // Toast notification

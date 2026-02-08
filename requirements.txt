@@ -1,6 +1,10 @@
 mediapipe
 opencv-python
-numpytorch
+numpy
+torch
 flask
 flask-cors
 google-generativeai
+pygame
+python-dotenv
+musicnotes
