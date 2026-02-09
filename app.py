@@ -35,10 +35,23 @@ if GEMINI_API_KEY != 'your_actual_api_key_here':
 # -------------------------
 # 1. Audio Setup
 # -------------------------
-pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+# Check if audio should be disabled (for cloud deployments like Render)
+DISABLE_AUDIO = os.environ.get("DISABLE_AUDIO", "0") == "1"
+
+if not DISABLE_AUDIO:
+    pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+    print("✓ Audio initialized successfully")
+else:
+    print("⚠ Audio disabled (running in cloud environment without audio device)")
+    # Initialize pygame without mixer for cloud environments
+    pygame.init()
 
 def generate_musical_note(frequency, duration=0.4, volume=0.4, instrument='piano'):
     """Generate a musical note with harmonics and proper envelope"""
+    # Return None if audio is disabled
+    if DISABLE_AUDIO:
+        return None
+    
     sample_rate = 22050
     n_samples = int(sample_rate * duration)
     t = np.arange(n_samples) / sample_rate
